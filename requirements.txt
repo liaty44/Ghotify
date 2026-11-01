@@ -4,3 +4,4 @@ pymongo==4.9.1
 pydantic==2.9.2
 pytz==2024.2
 annotated-types==0.7.0
+python-dotenv==1.0.1
