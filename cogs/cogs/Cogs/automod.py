@@ -1,78 +1,66 @@
 import discord
 from discord.ext import commands
+import asyncio
+import re
 from config import Config
 from database import db
 
-class InviteTracker(commands.Cog):
+class Automod(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.invites = {}
+        self.link_regex = re.compile(r'(https?://[^\s]+)', re.IGNORECASE)
 
     @commands.Cog.listener()
-    async def on_ready(self):
-        for guild in self.bot.guilds:
-            try:
-                self.invites[guild.id] = await guild.invites()
-            except discord.Forbidden:
-                pass
-
-    @commands.Cog.listener()
-    async def on_guild_join(self, guild):
-        try:
-            self.invites[guild.id] = await guild.invites()
-        except discord.Forbidden:
-            pass
-
-    @commands.Cog.listener()
-    async def on_member_join(self, member):
-        guild = member.guild
-        if guild.id not in self.invites:
+    async def on_message(self, message):
+        if message.author.bot or not message.guild:
             return
 
-        old_invites = self.invites[guild.id]
-        try:
-            new_invites = await guild.invites()
-        except discord.Forbidden:
+        if message.author.guild_permissions.manage_messages:
             return
 
-        inviter = None
-        used_invite = None
+        guild_settings = await db.db.guilds.find_one({"guild_id": message.guild.id})
+        anti_link_enabled = guild_settings.get("anti_link", Config.ENABLE_AUTOMOD) if guild_settings else Config.ENABLE_AUTOMOD
 
-        for invite in old_invites:
-            for new_invite in new_invites:
-                if invite.code == new_invite.code and new_invite.uses > invite.uses:
-                    inviter = new_invite.inviter
-                    used_invite = new_invite
-                    break
+        if anti_link_enabled:
+            if self.link_regex.search(message.content):
+                try:
+                    await message.delete()
+                    
+                    await db.db.automod_logs.insert_one({
+                        "guild_id": message.guild.id,
+                        "user_id": message.author.id,
+                        "reason": "Anti-Link Violation",
+                        "content": message.content
+                    })
 
-        self.invites[guild.id] = new_invites
+                    embed = discord.Embed(
+                        title="⚠️ Automod Action",
+                        description=f"{message.author.mention}, posting links is strictly prohibited in this server! 🚫",
+                        color=Config.COLOR_WARNING
+                    )
+                    warn_msg = await message.channel.send(embed=embed)
+                    await asyncio.sleep(5)
+                    await warn_msg.delete()
+                except Exception as e:
+                    print(f"Automod deletion error: {e}")
 
-        if inviter:
-            await db.db.invites.update_one(
-                {"guild_id": guild.id, "user_id": inviter.id},
-                {"$inc": {"joins": 1}},
-                upsert=True
-            )
+    @commands.command(name="antilink")
+    @commands.has_permissions(manage_guilds=True)
+    async def toggle_antilink(self, ctx, status: str):
+        """Toggles anti-link filtering on or off."""
+        if status.lower() not in ["on", "off"]:
+            return await ctx.send("❌ Invalid option! Choose either `on` or `off`")
 
-            user_data = await db.db.invites.find_one({"guild_id": guild.id, "user_id": inviter.id})
-            total_invites = user_data.get("joins", 1) if user_data else 1
-            print(f"[Invites] {member.name} joined using code {used_invite.code} by {inviter.name} (Total: {total_invites})")
-
-    @commands.command(name="invites")
-    async def show_invites(self, ctx, member: discord.Member = None):
-        """Displays invite statistics for a user."""
-        member = member or ctx.author
-        user_data = await db.db.invites.find_one({"guild_id": ctx.guild.id, "user_id": member.id})
-        
-        joins = user_data.get("joins", 0) if user_data else 0
-        
-        embed = discord.Embed(
-            title=f"📊 Invite Stats: {member.name}",
-            description=f"This user has invited a total of **{joins}** members to the server! 🔥",
-            color=Config.COLOR_PRIMARY
+        is_on = True if status.lower() == "on" else False
+        await db.db.guilds.update_one(
+            {"guild_id": ctx.guild.id},
+            {"$set": {"anti_link": is_on}},
+            upsert=True
         )
-        await ctx.send(embed=embed)
+        
+        status_text = "ENABLED ✅" if is_on else "DISABLED ❌"
+        await ctx.send(f"🛡️ **{Config.BOT_NAME} Automod:** Anti-link feature has been successfully **{status_text}**.")
 
 async def setup(bot):
-    await bot.add_cog(InviteTracker(bot))
-    
+    await bot.add_cog(Automod(bot))
+                    
