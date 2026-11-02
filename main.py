@@ -1,4 +1,5 @@
 import os
+import asyncio
 import discord
 from discord.ext import commands
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -6,112 +7,79 @@ from dotenv import load_dotenv
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from threading import Thread
 
-# 1. Load Environment Variables
+# Load Environment
 load_dotenv()
 TOKEN = os.getenv("BOT_TOKEN") or os.getenv("TOKEN")
 MONGO_URI = os.getenv("MONGO_CONNECTION") or os.getenv("MONGO_URI")
 
-if not TOKEN:
-    print("CRITICAL: BOT_TOKEN is missing in environment variables!")
-    exit(1)
-
-# 2. Setup Discord Intents (Instant Commands Response ke liye)
+# Intents Configuration
 intents = discord.Intents.default()
-intents.message_content = True  # Prefix commands read karne ke liye mandatory hai
-intents.members = True          # Server members track karne ke liye
+intents.message_content = True
+intents.members = True
+intents.presences = True
 
-# Bot setup with prefix '!' (Aap ise change kar sakte hain)
-bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
+bot = commands.Bot(command_prefix="-", intents=intents, help_command=None)
 
-# 3. MongoDB Database Connection (Async & Fast)
-db = None
-if MONGO_URI:
-    try:
-        cluster = AsyncIOMotorClient(MONGO_URI)
-        db = cluster["Ghotify"]  # Database Name
-        print("INFO: MongoDB successfully connected!")
-    except Exception as e:
-        print(f"CRITICAL: Database connection failed: {e}")
-else:
-    print("WARNING: No MONGO_CONNECTION defined. Database features won't work.")
+# Database Injector
+async def init_db():
+    if MONGO_URI:
+        try:
+            bot.db_client = AsyncIOMotorClient(MONGO_URI)
+            bot.db = bot.db_client["Ghotify"]
+            print("INFO: MongoDB cluster connected successfully!")
+        except Exception as e:
+            print(f"CRITICAL: MongoDB connection crash: {e}")
+    else:
+        print("WARNING: Database URI is missing. Stats & logs won't work.")
 
-# 4. Lightweight Web Server (UptimeRobot / Cron-Job.org ko 24/7 UP rakhne ke liye)
+# Render Light Health Server (Port 10000 Fix)
 class HealthCheckServer(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.send_header("Content-type", "text/plain")
         self.end_headers()
-        self.wfile.write(b"GHOTIFY IS ALIVE")
+        self.wfile.write(b"Ghotify Falcon Engine Up")
 
 def run_web_server():
-    port = int(os.environ.get("PORT", 10000))  # Render default port 10000 use karega
+    port = int(os.environ.get("PORT", 10000))
     server = HTTPServer(("0.0.0.0", port), HealthCheckServer)
-    print(f"INFO: Render health check server started on port {port}")
+    print(f"INFO: Keep-alive server running on port {port}")
     server.serve_forever()
 
-# 5. Bot Events
+# Dynamic Cog Loader (Automatic Folders Scan)
+async def load_extensions():
+    # Scanning source categories
+    base_dirs = ["src/commands", "src/events"]
+    for base in base_dirs:
+        if not os.path.exists(base):
+            continue
+        for root, _, files in os.walk(base):
+            for file in files:
+                if file.endswith(".py") and not file.startswith("__"):
+                    # Converting file path to python dot notation
+                    relative_path = os.path.relpath(os.path.join(root, file))
+                    cog_path = relative_path.replace(os.sep, ".").removesuffix(".py")
+                    try:
+                        await bot.load_extension(cog_path)
+                        print(f"SUCCESS: Loaded module -> {cog_path}")
+                    except Exception as e:
+                        print(f"FAILED: Could not load module {cog_path}. Error: {e}")
+
 @bot.event
 async def on_ready():
-    print(f"INFO: Logged in as {bot.user.name} (ID: {bot.user.id})")
-    print("INFO: GHOTIFY is officially online and ready to respond instant!")
+    print(f"🤖 Bot Engine Online: Logged in as {bot.user}")
 
-@bot.event
-async def on_message(message):
-    if message.author.bot:
-        return
-        
-    # Agar bot ko tag/ping kiya jaye toh instant reply
-    if bot.user.mentioned_in(message) and len(message.content.split()) == 1:
-        await message.channel.send(f"Hey! My prefix is `!`. Type `!help` to see all commands.")
-        return
-
-    # Yeh line prefix commands ko execute karne ke liye sabse zaroori hai
-    await bot.process_commands(message)
-
-# 6. Sample Instant Commands
-@bot.command()
-async def ping(ctx):
-    """Bot latency check karne ke liye instant command"""
-    latency = round(bot.latency * 1000)
-    await ctx.send(f"🏓 Pong! Latency is `{latency}ms`")
-
-@bot.command()
-async def help(ctx):
-    """Custom Help Menu"""
-    embed = discord.Embed(title="Ghostify Bot Commands", color=discord.Color.red())
-    embed.add_field(name="⚙️ Utility", value="`!ping` - Check latency\n`!uptime` - Check bot status", inline=False)
-    embed.add_field(name="🛡️ Moderation", value="`!kick @user` - Kick member\n`!ban @user` - Ban member", inline=False)
-    embed.set_footer(text="Ghotify Falcon • Instant Response Mode")
-    await ctx.send(embed=embed)
-
-@bot.command()
-async def kick(ctx, member: discord.Member = None, *, reason="No reason provided"):
-    """Instant Member Kick Command"""
-    if not ctx.author.guild_permissions.kick_members:
-        return await ctx.send("❌ Aapke paas `Kick Members` ki permission nahi hai.")
-    if not member:
-        return await ctx.send("❌ Please mention a user to kick. Example: `!kick @username`")
-    
-    await member.kick(reason=reason)
-    await ctx.send(f"✅ **{member.name}** ko successfully kick kar diya gaya hai. Reason: {reason}")
-
-@bot.command()
-async def ban(ctx, member: discord.Member = None, *, reason="No reason provided"):
-    """Instant Member Ban Command"""
-    if not ctx.author.guild_permissions.ban_members:
-        return await ctx.send("❌ Aapke paas `Ban Members` ki permission nahi hai.")
-    if not member:
-        return await ctx.send("❌ Please mention a user to ban. Example: `!ban @username`")
-    
-    await member.ban(reason=reason)
-    await ctx.send(f"✅ **{member.name}** ko successfully ban kar diya gaya hai. Reason: {reason}")
-
-# 7. Start the Web Server & Bot
-if __name__ == "__main__":
-    # Web server ko alag thread me chalana taaki bot block na ho
+async def main():
+    # Parallel Initialization
     web_thread = Thread(target=run_web_server, daemon=True)
     web_thread.start()
     
-    # Start bot
-    bot.run(TOKEN)
+    await init_db()
+    await load_extensions()
     
+    async with bot:
+        await bot.start(TOKEN)
+
+if __name__ == "__main__":
+    asyncio.run(main())
+        
