@@ -34,7 +34,7 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
 
 def run_health_server():
     # Render automatically PORT environment variable deta hai, nahi toh .env wala 8080 use hoga
-    port = int(os.getenv("PORT", 8080))
+    port = int(os.getenv("PORT", 10000))
     server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
     logger.info(f"Render health check server started on port {port}")
     server.serve_forever()
