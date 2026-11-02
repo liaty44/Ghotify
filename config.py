@@ -5,7 +5,7 @@ load_dotenv()
 
 class Config:
     BOT_NAME = "GHOTIFY"
-    PREFIX = os.getenv("PREFIX", "g!")
+    PREFIX = os.getenv("PREFIX", "-")
     TOKEN = os.getenv("BOT_TOKEN", "")
     MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017/ghotify")
     
